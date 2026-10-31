@@ -33,19 +33,17 @@
 
 ```bash
 git clone https://github.com/xuan15124/heat-sampler ~/Library/heat-sampler
-bash ~/Library/heat-sampler/install.sh          # 安装: 只放文件, 不启动、零权限
-bash ~/Library/heat-sampler/install.sh start    # 启动: 立即开始采样(登录时也会自动拉起)
-bash ~/Library/heat-sampler/install.sh stop     # 停止: 文件保留, start 可再启
+bash ~/Library/heat-sampler/install.sh          # 安装: 只放文件, 不启动、零权限、必然成功
+bash ~/Library/heat-sampler/install.sh start    # 运行: 这一步才需要管理员授权(弹系统授权框)
+bash ~/Library/heat-sampler/install.sh stop     # 停止: 同样需要授权(服务是 root 级的)
 ```
 
-**权限在启动后按需辅助获取**，不用提前准备：
+**单一模式，无降级**：本服务只有 root 精准采样一种形态——安装永远成功（只放文件），
+运行必须授权；不授权就无法运行，没有免授权的备胎。
 
-- **精准采样**（最热核温度/真实功耗）：装了 HeatBar 的话菜单里会出现「⚡ 升级精准采样」，点一下弹系统授权框即可；没装 HeatBar 就跑 `bash install.sh --root`（管理员授权仅此一次）
-- **通知权限**：HeatBar 启动即检测，首次过热预警时系统会问一次「允许通知」；拒绝了菜单里也常驻「🔔 开启通知权限」直达系统设置
+- **通知权限**：HeatBar 启动即检测，首次过热预警时系统会问一次「允许通知」；拒绝了菜单里常驻「🔔 开启通知权限」直达系统设置
 
-**为什么精准采样要 root**：macOS 27 已封掉免 root 的 SMC 用户态直读（实测 `kIOReturnUnsupported`），powermetrics 是官方唯一开放全部传感器（单核温度/真实功耗）的口子。
-
-**为什么取最热核**：单传感器峰值比多传感器平均更接近真实最热处。
+**为什么必须 root / 数据从哪来**：macOS 27 已封掉免 root 的 SMC 用户态直读（实测 `kIOReturnUnsupported`），且把温度/风扇从 powermetrics 里也移除了（实测 `unrecognized sampler: smc`）。所以本服务以 root 跑 powermetrics（官方口子：CPU/GPU/全机功耗、热压力）+ macmon（经 IOReport，目前唯一还活着的温度/风扇来源）合并产出。装完自动适配，无需关心分工。
 
 ## HeatBar · 菜单栏控制
 
