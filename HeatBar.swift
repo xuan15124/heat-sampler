@@ -14,7 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var pausePath: String { Self.home + "/.cache/heat-sampler/PAUSED" }
     static var home: String { NSHomeDirectory() }
     var paused = false
+    var wasHot = false
     var timer: Timer?
+    let hotThreshold: Double = 80  // 与 heat-guard 默认 hot_temp_c 一致
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)  // 菜单栏常驻, 不上 Dock
@@ -68,11 +70,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = NSImage(systemSymbolName: "thermometer.medium", accessibilityDescription: "温度")
         item.button?.image?.isTemplate = true
         item.button?.title = show >= 0 ? String(format: "%.0f°", show) : "–"
+        // 主动预警: 过热图标变红 + 状态沿触发一次系统通知, 回落后自动恢复
+        let hot = show >= hotThreshold
+        item.button?.contentTintColor = hot ? NSColor.systemRed : nil
+        if hot && !wasHot {
+            notify(
+                "本机过热 🔥",
+                String(format: "CPU %.0f° / GPU %.0f° 达到预警线 %.0f°——重活会被 heat-guard 暂缓", c ?? g ?? -1, g ?? -1, hotThreshold)
+            )
+        }
+        wasHot = hot
         var line = String(format: "CPU %.0f° · GPU %.0f°", c ?? -1, g ?? -1)
         if let p = j["power"] as? String, !p.isEmpty { line += " · " + p }
         line += String(format: " · 数据 %d 秒前", age)
+        if hot { line += " —— 🔴 过热预警中" }
         if age > 300 { line += "（可能已断供或暂停）" }
         statusLine.title = line
+    }
+
+    func notify(_ title: String, _ body: String) {
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = [
+            "-e",
+            "display notification \"\(body)\" with title \"\(title)\" sound name \"Ping\"",
+        ]
+        try? task.run()
     }
 }
 
