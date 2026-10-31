@@ -76,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if hot && !wasHot {
             notify(
                 "本机过热 🔥",
-                String(format: "CPU %.0f° / GPU %.0f° 达到预警线 %.0f°——重活会被 heat-guard 暂缓", c ?? g ?? -1, g ?? -1, hotThreshold)
+                String(format: "CPU %.0f° / GPU %.0f° 达到预警线 %.0f°——建议缓一缓重活，注意散热", c ?? g ?? -1, g ?? -1, hotThreshold)
             )
         }
         wasHot = hot
