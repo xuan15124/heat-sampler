@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 用户级免授权模式模板: __USER_HOME__ 由 install.sh 渲染; macmon 平均口径 -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.xuan.heatsampler.user</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__USER_HOME__/Library/heat-sampler/sampler.py</string>
+        <string>--macmon</string>
+        <string>--home</string>
+        <string>__USER_HOME__</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>120</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardErrorPath</key>
+    <string>__USER_HOME__/.cache/heat-sampler/agent.err.log</string>
+</dict>
+</plist>
