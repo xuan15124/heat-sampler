@@ -74,11 +74,7 @@ def write_atomic(path_str, obj):
 
 
 def parse_pmetrics(out):
-    """powermetrics 文本 → 温度/功耗/风扇。取最热核(单一传感器常是 max), 正则宁宽勿漏。"""
-    cpu_temps, gpu_temps = [], []
-    for m in re.finditer(r"(?i)(cpu|gpu)[^\n:]{0,40}?die\s+temperature[s]?:?\s*([\d.]+)", out):
-        (cpu_temps if m.group(1).lower() == "cpu" else gpu_temps).append(float(m.group(2)))
-
+    """powermetrics 文本 → 功耗/热压力(温度在 macOS 27 已被苹果移出 powermetrics, 见 main)。"""
     def watt(label):
         m = re.search(r"(?i)%s\s+Power:\s*([\d.]+)\s*(m?W)" % label, out)
         if not m:
@@ -90,17 +86,23 @@ def parse_pmetrics(out):
     for m in re.finditer(r"(?i)fan\s*\d*[^\n\d]{0,24}(\d{3,5})\s*rpm", out):
         fans.append(int(m.group(1)))
     pressure = ""
-    m = re.search(r'(?i)thermal\s+pressure:?\s*"?([\w\- ]+)"?', out)
-    if m:
+    # macOS 27: "Current pressure level: Nominal"; 旧版: "Thermal pressure: Nominal"
+    m = re.search(r'(?i)pressure\s+level:?\s*"?([\w\-]+)"?', out) or re.search(
+        r'(?i)thermal\s+pressure:?\s*"?([\w\-]+)"?', out
+    )
+    if m and m.group(1):
         pressure = m.group(1).strip()
+    m = re.search(r"(?i)Combined\s+Power[^:]*:\s*([\d.]+)\s*(m?W)", out)
+    combined = None
+    if m:
+        v = float(m.group(1))
+        combined = round(v / 1000.0 if m.group(2) == "mW" else v, 1)
     return {
-        "cpu_temp": max(cpu_temps) if cpu_temps else None,
-        "gpu_temp": max(gpu_temps) if gpu_temps else None,
-        "n_cpu_sensors": len(cpu_temps),
-        "n_gpu_sensors": len(gpu_temps),
+        "cpu_temp": None,   # 温度由 macmon 补(macOS 27 powermetrics 已无传感器输出)
+        "gpu_temp": None,
         "cpu_power_w": watt("CPU"),
         "gpu_power_w": watt("GPU"),
-        "all_power_w": watt("Package") or watt("System"),
+        "all_power_w": watt("Package") or watt("System") or combined,
         "fan_rpm": fans,
         "thermal_pressure": pressure,
     }
@@ -154,19 +156,8 @@ def throttle_pct():
     return None
 
 
-def power_line(p):
-    bits = []
-    if p.get("cpu_power_w") is not None:
-        bits.append("CPU %sW" % p["cpu_power_w"])
-    if p.get("gpu_power_w") is not None:
-        bits.append("GPU %sW" % p["gpu_power_w"])
-    if p.get("all_power_w") is not None:
-        bits.append("全机 %sW" % p["all_power_w"])
-    return " · ".join(bits)
-
-
 def macmon_once():
-    """用户态兜底采样(macmon, 温度为多传感器平均口径)。--macmon 模式用。"""
+    """macmon 单次采样(用户态 IOReport): macOS 27 上仅存的温度/风扇来源。"""
     exe = None
     for c in ("/opt/homebrew/bin/macmon", "/usr/local/bin/macmon"):
         try:
@@ -199,6 +190,17 @@ def macmon_once():
     return None
 
 
+def power_line(p):
+    bits = []
+    if p.get("cpu_power_w") is not None:
+        bits.append("CPU %sW" % p["cpu_power_w"])
+    if p.get("gpu_power_w") is not None:
+        bits.append("GPU %sW" % p["gpu_power_w"])
+    if p.get("all_power_w") is not None:
+        bits.append("全机 %sW" % p["all_power_w"])
+    return " · ".join(bits)
+
+
 def main():
     if PAUSE_FLAG.exists():
         print("sampler paused (%s exists), skip" % PAUSE_FLAG)
@@ -210,53 +212,23 @@ def main():
     tp = throttle_pct()
     model = sysctl("machdep.cpu.brand_string")
 
-    if "--macmon" in sys.argv[1:]:
-        # 用户态兜底模式: macmon 平均温度 + 系统级负载/内存, 供还没装 root daemon 时过渡
-        m = macmon_once()
-        t = (m.get("temp") or {}) if m else {}
-
-        def watt(key):
-            try:
-                v = float((m or {}).get(key))
-                return round(v, 1) if v > 0 else None
-            except (TypeError, ValueError):
-                return None
-
-        metrics = {
-            "ts": now,
-            "model": model,
-            "cpu_load": load1,
-            "load1": load1,
-            "cpu_usage_pct": None,
-            "mem_used": mem_used,
-            "mem_total": mem_total,
-            "uptime": now - int(boot.group(1)) if boot else None,
-            "power": "",
-            "cpu_power_w": watt("cpu_power"),
-            "gpu_power_w": watt("gpu_power"),
-            "all_power_w": watt("all_power"),
-            "fan_rpm": [f.get("rpm") for f in (m or {}).get("fans") or []],
-            "throttle_pct": tp,
-            "cpu_temp": round(t["cpu_temp_avg"], 1) if t.get("cpu_temp_avg") is not None else None,
-            "gpu_temp": round(t["gpu_temp_avg"], 1) if t.get("gpu_temp_avg") is not None else None,
-            "temp_src": "macmon",
-        }
-        outs = load_outputs()
-        for path_str in outs:
-            write_atomic(path_str, metrics)
-        print("sampled(macmon): cpu=%s gpu=%s" % (metrics["cpu_temp"], metrics["gpu_temp"]))
-        return 0 if metrics["cpu_temp"] is not None else 2
-
     try:
-        out = subprocess.run(
-            ["/usr/bin/powermetrics", "-n", "1", "-i", "200", "-s", "smc,cpu_power,gpu_power,thermal"],
+        r = subprocess.run(
+            # macOS 27: "smc" 采样器已移除, 温度并入 thermal
+            ["/usr/bin/powermetrics", "-n", "1", "-i", "200", "-s", "cpu_power,gpu_power,ane_power,thermal"],
             capture_output=True, text=True, timeout=30,
-        ).stdout
+        )
+        out, err = r.stdout, r.stderr
     except (OSError, subprocess.SubprocessError) as exc:
         print("powermetrics failed: %s" % exc, file=sys.stderr)
         return 1
     if not out.strip():
-        print("powermetrics empty output", file=sys.stderr)
+        # 诊断: stderr 留痕(采样器参数错误/权限问题都在这里)
+        print("powermetrics rc=%s stderr=%r" % (r.returncode, err[:500]), file=sys.stderr)
+        try:
+            Path(str(RAW_DUMP) + ".err").write_text(err or "(empty stderr)", encoding="utf-8")
+        except OSError:
+            pass
         return 1
     try:
         RAW_DUMP.write_text(out, encoding="utf-8")
@@ -269,6 +241,21 @@ def main():
     load1 = round(os.getloadavg()[0], 2)
     boot = re.search(r"sec\s*=\s*(\d+)", sysctl("kern.boottime"))
 
+    # 温度与风扇: macOS 27 把它们移出了 powermetrics, macmon(用户态 IOReport)是目前唯一来源
+    cpu_temp = gpu_temp = None
+    fans = p["fan_rpm"]
+    m = macmon_once()
+    if m:
+        t = m.get("temp") or {}
+        if t.get("cpu_temp_avg") is not None:
+            cpu_temp = round(float(t["cpu_temp_avg"]), 1)
+        if t.get("gpu_temp_avg") is not None:
+            gpu_temp = round(float(t["gpu_temp_avg"]), 1)
+        if not fans and m.get("fans"):
+            # root 下 macmon 风扇可能读 0(权限不叠加), 0 视为无数据
+            fans = [f.get("rpm") for f in m.get("fans") or [] if f.get("rpm")]
+
+    temp_src = "powermetrics+macmon" if cpu_temp is not None else "powermetrics"
     metrics = {
         "ts": now,
         "model": sysctl("machdep.cpu.brand_string"),
@@ -282,22 +269,19 @@ def main():
         "cpu_power_w": p["cpu_power_w"],
         "gpu_power_w": p["gpu_power_w"],
         "all_power_w": p["all_power_w"],
-        "fan_rpm": p["fan_rpm"],
+        "fan_rpm": fans,
         "throttle_pct": throttle_pct(),
         "thermal_pressure": p["thermal_pressure"],
-        # 取最热核而非平均: 精度对标 Stats 的单传感器口径
-        "cpu_temp": p["cpu_temp"],
-        "gpu_temp": p["gpu_temp"],
-        "n_temp_sensors": [p["n_cpu_sensors"], p["n_gpu_sensors"]],
-        "temp_src": "powermetrics",
+        "cpu_temp": cpu_temp,
+        "gpu_temp": gpu_temp,
+        "temp_src": temp_src,
     }
     outs = load_outputs()
     for path_str in outs:
         write_atomic(path_str, metrics)
-    ok = metrics["cpu_temp"] is not None or metrics["gpu_temp"] is not None
-    print("sampled: cpu=%s gpu=%s sensors=%s power=%r fans=%s pressure=%r outputs=%d" % (
-        metrics["cpu_temp"], metrics["gpu_temp"], metrics["n_temp_sensors"],
-        metrics["power"], metrics["fan_rpm"], metrics["thermal_pressure"], len(outs)))
+    ok = cpu_temp is not None or metrics["cpu_power_w"] is not None
+    print("sampled: cpu=%s gpu=%s power=%r fans=%s pressure=%r src=%s outputs=%d" % (
+        cpu_temp, gpu_temp, metrics["power"], fans, p["thermal_pressure"], temp_src, len(outs)))
     return 0 if ok else 2
 
 

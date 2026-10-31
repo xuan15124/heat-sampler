@@ -12,7 +12,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let menu = NSMenu()
     let statusLine = NSMenuItem(title: "读取中…", action: nil, keyEquivalent: "")
     let startItem = NSMenuItem(title: "▶ 启动采样服务", action: #selector(startSampler), keyEquivalent: "")
-    let upgradeItem = NSMenuItem(title: "⚡ 升级精准采样（弹授权框）", action: #selector(upgradeSampler), keyEquivalent: "")
     let notifyItem = NSMenuItem(title: "🔔 开启通知权限", action: #selector(openNotifySettings), keyEquivalent: "")
     let pauseItem = NSMenuItem(title: "暂停采样", action: #selector(togglePause), keyEquivalent: "")
     var metricsPath: String { Self.home + "/.cache/heat-sampler/metrics.json" }
@@ -32,8 +31,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         startItem.target = self
         menu.addItem(startItem)
-        upgradeItem.target = self
-        menu.addItem(upgradeItem)
         notifyItem.target = self
         menu.addItem(notifyItem)
         menu.addItem(.separator())
@@ -83,24 +80,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func upgradeSampler() {
-        // 弹系统授权框, 以 root 跑 install.sh --root(装 root 精准采样并退役用户级)
-        let script = "do shell script \"bash '\(Self.home)/Library/heat-sampler/install.sh' --root --elevated\" with administrator privileges"
-        let task = Process()
-        task.launchPath = "/usr/bin/osascript"
-        task.arguments = ["-e", script]
-        do {
-            try task.run()
-            statusLine.title = "正在升级精准采样…"
-            DispatchQueue.global().async {
-                task.waitUntilExit()
-                DispatchQueue.main.async { self.refresh() }
-            }
-        } catch {
-            statusLine.title = "升级失败: \(error.localizedDescription)"
-        }
-    }
-
     @objc func togglePause() {
         paused.toggle()
         if paused {
@@ -137,7 +116,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.button?.title = ""
             statusLine.title = "采样已暂停（恢复后 2 分钟内出数）"
             startItem.isHidden = true
-            upgradeItem.isHidden = true
             notifyItem.isHidden = true
             return
         }
@@ -149,8 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.button?.image?.isTemplate = true
             item.button?.title = ""
             statusLine.title = "没有采样数据（服务没启动？）"
-            startItem.isHidden = false  // 一键补启动(免授权)
-            upgradeItem.isHidden = true
+            startItem.isHidden = false  // 一键补启动(会按需弹授权框)
             notifyItem.isHidden = notifyGranted
             return
         }
@@ -163,7 +140,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 权限辅助: 非 powermetrics 来源 = 还在免授权模式 → 显示升级入口
         startItem.isHidden = true  // 有数据 = 服务在跑
-        upgradeItem.isHidden = (src == "powermetrics")
         notifyItem.isHidden = notifyGranted
 
         item.button?.image = NSImage(systemSymbolName: "thermometer.medium", accessibilityDescription: "温度")
@@ -182,7 +158,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var line = String(format: "CPU %.0f° · GPU %.0f°", c ?? -1, g ?? -1)
         if let p = j["power"] as? String, !p.isEmpty { line += " · " + p }
         line += String(format: " · 数据 %d 秒前", age)
-        if src == "macmon" { line += " · 免授权模式" }
         if hot { line += " —— 🔴 过热预警中" }
         if age > 300 { line += "（可能已断供或暂停）" }
         statusLine.title = line
